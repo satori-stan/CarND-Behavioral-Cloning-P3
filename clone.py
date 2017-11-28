@@ -1,88 +1,125 @@
+
 import argparse
 from datetime import datetime
 import csv
 import cv2
 import numpy as np
-from keras.models import Sequential, load_model
-from keras.layers import Flatten, Dense, Activation, Dropout
-from keras.layers.convolutional import Convolution2D
-from keras.layers.pooling import MaxPooling2D 
-from keras.layers.normalization import BatchNormalization
-import h5py
 from keras import __version__ as keras_version
+from keras.layers import Flatten, Dense, Activation, Dropout, merge, Input, Cropping2D
+from keras.layers.convolutional import Convolution2D
+from keras.layers.normalization import BatchNormalization
+from keras.layers.pooling import MaxPooling2D
+from keras.models import Model, load_model
+import math
+import h5py
+
+
+def load_image(base_path, image_path_from_capture):
+    images_path = base_path + 'IMG/'
+    filename = image_path_from_capture.split('\\')[-1]
+    return cv2.imread(images_path + filename)
+
+def correct_angle(angle, offset):
+    # =ATAN(Y/((Y/TAN(B*PI()/180))+W))*180/PI()  # Beware TAN(0)!
+    b = 25 * angle  # The max angle (as displayed in the sim) times the proportional steer
+    y = 75  # The distance to the horizon
+    y_tan = y / math.tan(b * math.pi / 180) if abs(angle) > 0.00001 else 200000000
+    return math.atan(y / (y_tan + offset)) * 180 / math.pi / 25
+
 
 def train(data_root_path, model_file):
-  captures = []
-  with open(data_root_path + 'driving_log.csv') as csv_file:
-      reader = csv.reader(csv_file)
-      for line in reader:
-        captures.append(line)
-        #if len(captures) > 300:
-        #  break
+    captures = []
 
-  images = []
-  steering_angles = []
-  #for capture in captures:
-  #  panoramic = None
-  #  for view in range(3):
-  #    source_path = capture[view]
-  #    filename = source_path.split('\\')[-1]
-  #    image_path = data_root_path + 'IMG/' + filename
-  #    image = cv2.imread(image_path)
-  #    if panoramic is None:
-  #      panoramic = image
-  #    else:
-  #      panoramic = np.concatenate((panoramic, image), axis = 1)
-  #  # TODO: Augment (mirror) data
-  #  images.append(panoramic)
-  #  steering_angles.append(float(capture[3]))
-  for capture in captures:
-    source_path = capture[0]
-    filename = source_path.split('\\')[-1]
-    image_path = data_root_path + 'IMG/' + filename
-    image = cv2.imread(image_path)
-    #images.append(image)
-    #steering_angles.append(float(capture[3]))
-    # TODO: Use left and right images with correction factor for angle
-    # TODO: Augment (mirror) data
-    images.append(np.fliplr(image))
-    steering_angles.append(-float(capture[3]))
+    print('Preprocessing  . . .')
+    with open(data_root_path + 'driving_log.csv') as csv_file:
+        reader = csv.reader(csv_file)
+        for line in reader:
+            captures.append(line)
+            #if len(captures) > 500:
+            #    break
+    
+    from sklearn.model_selection import train_test_split
+    train_samples, validation_samples = train_test_split(captures, test_size=0.2)
 
-  X_train = np.array(images)
-  y_train = np.array(steering_angles)
+    import sklearn
 
-  # TODO: Load a model if provided, to finetune
-  if (model_file == ''):
-    model = Sequential()
-    model.add(BatchNormalization(input_shape = (160, 320, 3)))
-    model.add(Convolution2D(32, 1, 1, activation = 'relu', bias = True))
-    model.add(Dropout(0.2))
-    model.add(Convolution2D(32, 1, 1, activation = 'relu', bias = True))
-    model.add(Dropout(0.2))
-    model.add(MaxPooling2D((5, 5)))
-    model.add(Convolution2D(128, 1, 1, activation = 'relu', bias = True))
-    model.add(Dropout(0.2))
-    model.add(Convolution2D(128, 1, 1, activation = 'relu', bias = True))
-    model.add(Dropout(0.2))
-    model.add(MaxPooling2D((5, 5)))
-    model.add(Flatten())
-    model.add(Dropout(0.5))
-    model.add(Dense(64))
-    model.add(Activation('relu'))
-    model.add(Dropout(0.5))
-    model.add(Dense(1))
+    def batch_len(array):
+        """Shortcut to calculating the length of a batch from the generator based
+        on the augmentations performed"""
+        return len(array)*6  # (Center + Left + Right) * 2 (mirrored)
 
-    #TODO: Might want to attach to an RNN since they are good with sequences
+    def generator(samples, batch_size=32):
+        def mirror_and_append(image, steering_angle):
+            images.append(image)
+            steering_angles.append(float(steering_angle))
+            images.append(np.fliplr(image))
+            steering_angles.append(-float(steering_angle))
+        num_samples = len(samples)
+        while 1:
+            sklearn.utils.shuffle(samples)
+            for offset in range(0, num_samples, batch_size):
+                batch_samples = samples[offset:offset+batch_size]
+                images = []
+                steering_angles = []
+                for batch_sample in batch_samples:
+                    image = load_image(data_root_path, batch_sample[0])
+                    mirror_and_append(image, batch_sample[3])
+                    image = load_image(data_root_path, batch_sample[1]) # Left
+                    mirror_and_append(image, correct_angle(float(batch_sample[3]), -35))
+                    image = load_image(data_root_path, batch_sample[2]) # Right
+                    mirror_and_append(image, correct_angle(float(batch_sample[3]), 35))
 
-    model.compile(loss = 'mse', optimizer = 'adam')
+                X_data = np.array(images)
+                y_data = np.array(steering_angles)
+                yield sklearn.utils.shuffle(X_data, y_data)
+    
+    train_generator = generator(train_samples, batch_size=8)
+    validation_generator = generator(validation_samples, batch_size=8)
 
-  else:
-    model = load_model(model_file)
+    def _res_block(activation):
+        return merge((activation, Dropout(0.2)(
+            Convolution2D(64, 1, 1, activation='relu', bias=True)(
+                Dropout(0.2)(
+                    Convolution2D(64, 1, 1,
+                                  activation='relu', bias=True)(activation))))), mode='sum')
 
-  model.fit(X_train, y_train, validation_split = 0.2, shuffle = True,
-            nb_epoch = 20)
+    if (model_file is None):
+        inputs = Input(shape=(160, 320, 3))
+        x = Cropping2D(cropping=((60, 25), (0,0)))(inputs)
+        x = BatchNormalization()(x)
+        x = Convolution2D(64, 1, 1, activation='relu', bias=True)(x)
+        x = _res_block(x)
+        x = MaxPooling2D((4, 4))(x)
+        x = _res_block(x)
+        x = MaxPooling2D((4, 4))(x)
+        x = _res_block(x)
+        x = MaxPooling2D((4, 4))(x)
+        x = Flatten()(x)
+        #x = Dropout(0.5)(x)  # Dropout right after maxpooling?
+        x = Dense(64)(x)
+        x = Activation('relu')(x)
+        x = Dropout(0.5)(x)
+        predictions = Dense(1)(x)
 
-  model.save(datetime.now().strftime('%Y%m%d%H%M') + '_model.hd5')
+        model = Model(input=inputs, output=predictions)
+
+        #TODO: Might want to attach to an RNN since they are good
+        #      with sequences
+
+        model.compile(loss='mse', optimizer='adam')
+
+    else:
+        model = load_model(model_file)
+
+    #history = model.fit(X_train, y_train, validation_split=0.2, shuffle=True,
+    #          nb_epoch=20)
+    history = model.fit_generator(train_generator, samples_per_epoch=
+            batch_len(train_samples), validation_data=validation_generator,
+            nb_val_samples=batch_len(validation_samples), nb_epoch=1)
+
+    print(history.keys())
+
+    model.save(datetime.now().strftime('%Y%m%d%H%M') + '_model2.hd5')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Remote Driving Training')
@@ -96,7 +133,7 @@ if __name__ == '__main__':
         type=str,
 #        nargs='?',
 #        default='',
-        required = False,
+        required=False,
         help='Path to a model file that will be fine-tuned.'
     )
     args = parser.parse_args()
@@ -113,3 +150,4 @@ if __name__ == '__main__':
                 ', but the model was built using ', model_version)
 
     train(data_path, args.base_model)
+
