@@ -17,7 +17,7 @@ import h5py
 def load_image(base_path, image_path_from_capture):
     images_path = base_path + 'IMG/'
     filename = image_path_from_capture.split('\\')[-1]
-    return cv2.imread(images_path + filename)
+    return cv2.cvtColor(cv2.imread(images_path + filename), cv2.COLOR_BGR2RGB)
 
 def correct_angle(angle, offset):
     # =ATAN(Y/((Y/TAN(B*PI()/180))+W))*180/PI()  # Beware TAN(0)!
@@ -35,8 +35,6 @@ def train(data_root_path, model_file):
         reader = csv.reader(csv_file)
         for line in reader:
             captures.append(line)
-            #if len(captures) > 500:
-            #    break
     
     from sklearn.model_selection import train_test_split
     train_samples, validation_samples = train_test_split(captures, test_size=0.2)
@@ -73,11 +71,12 @@ def train(data_root_path, model_file):
                 y_data = np.array(steering_angles)
                 yield sklearn.utils.shuffle(X_data, y_data)
     
-    train_generator = generator(train_samples, batch_size=8)
-    validation_generator = generator(validation_samples, batch_size=8)
+    train_generator = generator(train_samples, batch_size=4)
+    validation_generator = generator(validation_samples, batch_size=4)
 
     def _res_block(activation):
         return merge((activation, Dropout(0.2)(
+            # TODO: Get number of features from a parameter
             Convolution2D(64, 1, 1, activation='relu', bias=True)(
                 Dropout(0.2)(
                     Convolution2D(64, 1, 1,
@@ -87,6 +86,7 @@ def train(data_root_path, model_file):
         inputs = Input(shape=(160, 320, 3))
         x = Cropping2D(cropping=((60, 25), (0,0)))(inputs)
         x = BatchNormalization()(x)
+        # Initial convolution to fit the residual block
         x = Convolution2D(64, 1, 1, activation='relu', bias=True)(x)
         x = _res_block(x)
         x = MaxPooling2D((4, 4))(x)
@@ -115,9 +115,9 @@ def train(data_root_path, model_file):
     #          nb_epoch=20)
     history = model.fit_generator(train_generator, samples_per_epoch=
             batch_len(train_samples), validation_data=validation_generator,
-            nb_val_samples=batch_len(validation_samples), nb_epoch=1)
+            nb_val_samples=batch_len(validation_samples), nb_epoch=7)
 
-    print(history.keys())
+    #print(history.keys())
 
     model.save(datetime.now().strftime('%Y%m%d%H%M') + '_model2.hd5')
 
