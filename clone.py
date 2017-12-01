@@ -1,16 +1,17 @@
-
+"""Trains or fine-tunes a Keras NN model to predict a steering angle from camera images"""
 import argparse
 from datetime import datetime
 import csv
+import math
 import cv2
 import numpy as np
 from keras import __version__ as keras_version
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
 from keras.layers import Flatten, Dense, Activation, Dropout, merge, Input, Cropping2D
 from keras.layers.convolutional import Convolution2D
 from keras.layers.normalization import BatchNormalization
 from keras.layers.pooling import MaxPooling2D
 from keras.models import Model, load_model
-import math
 import h5py
 
 
@@ -30,12 +31,12 @@ def correct_angle(angle, offset):
 def train(data_root_path, model_file):
     captures = []
 
-    print('Preprocessing  . . .')
+    print 'Preprocessing  . . .'
     with open(data_root_path + 'driving_log.csv') as csv_file:
         reader = csv.reader(csv_file)
         for line in reader:
             captures.append(line)
-    
+
     from sklearn.model_selection import train_test_split
     train_samples, validation_samples = train_test_split(captures, test_size=0.2)
 
@@ -82,9 +83,9 @@ def train(data_root_path, model_file):
                     Convolution2D(64, 1, 1,
                                   activation='relu', bias=True)(activation))))), mode='sum')
 
-    if (model_file is None):
+    if model_file is None:
         inputs = Input(shape=(160, 320, 3))
-        x = Cropping2D(cropping=((60, 25), (0,0)))(inputs)
+        x = Cropping2D(cropping=((60, 25), (0, 0)))(inputs)
         x = BatchNormalization()(x)
         # Initial convolution to fit the residual block
         x = Convolution2D(64, 1, 1, activation='relu', bias=True)(x)
@@ -106,20 +107,29 @@ def train(data_root_path, model_file):
         #TODO: Might want to attach to an RNN since they are good
         #      with sequences
 
-        model.compile(loss='mse', optimizer='adam')
+        model.compile(loss='mse', optimizer='adam') #, metrics=['accuracy'])
 
     else:
         model = load_model(model_file)
 
+    checkpoint = ModelCheckpoint(
+        datetime.now().strftime('%Y%m%d%H%M') + '_model2.hd5',
+        monitor='val_acc',
+        verbose=1, save_best_only=True, mode='max')
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2,
+                              patience=3) #, min_lr=0.001)
+    callbacks_list = [checkpoint, reduce_lr]
+
     #history = model.fit(X_train, y_train, validation_split=0.2, shuffle=True,
     #          nb_epoch=20)
-    history = model.fit_generator(train_generator, samples_per_epoch=
-            batch_len(train_samples), validation_data=validation_generator,
-            nb_val_samples=batch_len(validation_samples), nb_epoch=7)
+    history = model.fit_generator(train_generator,
+                                  samples_per_epoch=batch_len(train_samples),
+                                  validation_data=validation_generator,
+                                  nb_val_samples=batch_len(validation_samples),
+                                  nb_epoch=7,
+                                  callbacks=callbacks_list)
 
-    #print(history.keys())
-
-    model.save(datetime.now().strftime('%Y%m%d%H%M') + '_model2.hd5')
+    #model.save(datetime.now().strftime('%Y%m%d%H%M') + '_model2.hd5')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Remote Driving Training')
