@@ -166,7 +166,7 @@ def train(data_root_path, model_target_name, process_one_in_x_images,
         model.load_weights(source_model_file)
 
     checkpoint = ModelCheckpoint(
-        model_target_name + '_{val_loss:.4f}.hd5',
+        model_target_name + '_{val_loss:.4f}.h5',
         monitor='val_loss',
         verbose=1, save_best_only=True, mode='min')
     callbacks_list = [checkpoint]
@@ -179,7 +179,7 @@ def train(data_root_path, model_target_name, process_one_in_x_images,
 
     #print(history.history.keys())
 
-    model.save(model_target_name + '.hd5')
+    model.save(model_target_name + '.h5')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Remote Driving Training')
